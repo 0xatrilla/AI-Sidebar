@@ -28,6 +28,7 @@ interface AgentProvider {
   command: string;
   signInCommand?: string;
   setupUrl?: string;
+  connectedAt?: number;
   apiBaseUrl?: string;
   apiKey?: string;
   model?: string;
@@ -126,7 +127,7 @@ const PROVIDER_PRESETS: ProviderPreset[] = [
       id: "codex",
       name: "Codex",
       authType: "cli",
-      command: "codex",
+      command: "codex exec",
       signInCommand: "codex login",
       models: "gpt-5.4, gpt-5.4-mini, gpt-5.3-codex",
       reasoningEffort: "medium",
@@ -486,7 +487,7 @@ class AISidebarView extends ItemView {
         this.hideSlashCommands();
         return;
       }
-      if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+      if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
         void this.sendPrompt();
       }
@@ -626,7 +627,7 @@ class AISidebarView extends ItemView {
         options: parsed.options,
       };
 
-      const response = await runProvider(provider, request);
+      const response = await runProvider(provider, request, this.app);
       const actionResult = await this.handleActions(response);
       const assistantContent = actionResult ? `${response}\n\n${actionResult}` : response;
       this.messages.push({ role: "assistant", content: assistantContent.trim() || "No response." });
@@ -939,7 +940,10 @@ class AISidebarSettingTab extends PluginSettingTab {
         .onClick(async () => {
           await this.plugin.upsertProviderFromPreset(preset);
           const connectedProvider = this.plugin.getProvider(preset.provider.id) ?? preset.provider;
-          await startProviderSignIn(connectedProvider);
+          if (await startProviderSignIn(connectedProvider)) {
+            connectedProvider.connectedAt = Date.now();
+            await this.plugin.saveSettings();
+          }
           this.display();
         });
     }
@@ -954,165 +958,114 @@ class AISidebarSettingTab extends PluginSettingTab {
 
   private renderProviderSetting(containerEl: HTMLElement, provider: AgentProvider) {
     const wrapper = containerEl.createDiv("ai-sidebar-settings-provider");
-    new Setting(wrapper)
-      .setName(provider.name || provider.id)
-      .setDesc(this.providerDescription(provider))
-      .addText((text) => {
-        text
-          .setPlaceholder("Name")
-          .setValue(provider.name)
-          .onChange(async (value) => {
-            provider.name = value;
-            await this.plugin.saveSettings();
-          });
-      })
-      .addText((text) => {
-        text
-          .setPlaceholder("id")
-          .setValue(provider.id)
-          .onChange(async (value) => {
-            provider.id = sanitizeProviderId(value);
-            await this.plugin.saveSettings();
-          });
-      })
-      .addDropdown((dropdown) => {
-        dropdown
-          .addOption("api-key", "API key")
-          .addOption("oauth", "OAuth")
-          .addOption("cli", "Local CLI")
-          .setValue(provider.authType)
-          .onChange(async (value: ProviderAuthType) => {
-            provider.authType = value;
-            await this.plugin.saveSettings();
-            this.display();
-          });
-      })
-      .addButton((button) => {
-        this.configureConnectButton(button, provider);
-      })
-      .addText((text) => {
-        if (provider.authType === "cli") {
-          text
-            .setPlaceholder("codex")
-            .setValue(provider.command)
-            .onChange(async (value) => {
-              provider.command = value;
-              await this.plugin.saveSettings();
-            });
-        } else {
-          text.inputEl.hide();
+    const header = wrapper.createDiv("ai-sidebar-settings-provider__header");
+    const title = header.createDiv("ai-sidebar-settings-provider__title");
+    title.createDiv({ cls: "ai-sidebar-settings-provider__name", text: provider.name || provider.id });
+    title.createDiv({ cls: "ai-sidebar-settings-provider__desc", text: this.providerDescription(provider) });
+    header.createSpan({
+      cls: `ai-sidebar-settings-provider__badge ${isProviderConnected(provider) ? "is-connected" : ""}`,
+      text: providerConnectionLabel(provider),
+    });
+
+    const actions = wrapper.createDiv("ai-sidebar-settings-provider__actions");
+    new ButtonComponent(actions)
+      .setButtonText(this.plugin.settings.defaultProviderId === provider.id ? "Default" : "Use")
+      .setDisabled(this.plugin.settings.defaultProviderId === provider.id)
+      .onClick(async () => {
+        this.plugin.settings.defaultProviderId = provider.id;
+        await this.plugin.saveSettings();
+        this.display();
+      });
+    this.configureConnectButton(new ButtonComponent(actions), provider);
+    new ButtonComponent(actions)
+      .setIcon("trash")
+      .setTooltip("Remove provider")
+      .onClick(async () => {
+        this.plugin.settings.providers = this.plugin.settings.providers.filter((item) => item !== provider);
+        if (this.plugin.settings.defaultProviderId === provider.id) {
+          this.plugin.settings.defaultProviderId = this.plugin.settings.providers.first()?.id ?? "";
         }
-      })
-      .addButton((button) => {
-        button
-          .setIcon("trash")
-          .setTooltip("Remove provider")
-          .onClick(async () => {
-            this.plugin.settings.providers = this.plugin.settings.providers.filter((item) => item !== provider);
-            if (this.plugin.settings.defaultProviderId === provider.id) {
-              this.plugin.settings.defaultProviderId = this.plugin.settings.providers.first()?.id ?? "";
-            }
-            await this.plugin.saveSettings();
-            this.display();
-          });
+        await this.plugin.saveSettings();
+        this.display();
       });
 
-    if (provider.authType === "api-key") {
-      new Setting(wrapper)
-        .setName("API connection")
-        .setDesc("OpenAI-compatible Responses API endpoint, models, reasoning effort, and API key.")
-        .addText((text) => {
-          text
-            .setPlaceholder("https://api.openai.com/v1/responses")
-            .setValue(provider.apiBaseUrl ?? "")
-            .onChange(async (value) => {
-              provider.apiBaseUrl = value;
-              await this.plugin.saveSettings();
-            });
-        })
-        .addText((text) => {
-          text
-            .setPlaceholder("model")
-            .setValue(provider.model ?? "")
-            .onChange(async (value) => {
-              provider.model = value;
-              await this.plugin.saveSettings();
-            });
-        })
-        .addText((text) => {
-          text
-            .setPlaceholder("models for /model, comma-separated")
-            .setValue(provider.models ?? "")
-            .onChange(async (value) => {
-              provider.models = value;
-              await this.plugin.saveSettings();
-            });
-        })
-        .addDropdown((dropdown) => {
-          dropdown
-            .addOption("low", "Low")
-            .addOption("medium", "Medium")
-            .addOption("high", "High")
-            .setValue(provider.reasoningEffort ?? "medium")
-            .onChange(async (value: ReasoningEffort) => {
-              provider.reasoningEffort = value;
-              await this.plugin.saveSettings();
-            });
-        })
-        .addText((text) => {
-          text
-            .setPlaceholder("API key")
-            .setValue(provider.apiKey ?? "")
-            .onChange(async (value) => {
-              provider.apiKey = value;
-              await this.plugin.saveSettings();
-            });
-          text.inputEl.type = "password";
+    const fields = wrapper.createDiv("ai-sidebar-settings-provider__fields");
+    this.renderTextField(fields, "Name", provider.name, async (value) => {
+      provider.name = value;
+      await this.plugin.saveSettings();
+      this.display();
+    });
+
+    if (provider.authType === "cli") {
+      this.renderTextField(fields, "Command", provider.command, async (value) => {
+        provider.command = value;
+        await this.plugin.saveSettings();
+      });
+      if (provider.signInCommand) {
+        this.renderTextField(fields, "Sign-in command", provider.signInCommand, async (value) => {
+          provider.signInCommand = value;
+          provider.connectedAt = undefined;
+          await this.plugin.saveSettings();
         });
+      }
+    }
+
+    if (provider.authType === "api-key") {
+      this.renderTextField(fields, "API key", provider.apiKey ?? "", async (value) => {
+        provider.apiKey = value;
+        provider.connectedAt = value ? Date.now() : undefined;
+        await this.plugin.saveSettings();
+        this.display();
+      }, true);
+      this.renderTextField(fields, "Endpoint", provider.apiBaseUrl ?? "", async (value) => {
+        provider.apiBaseUrl = value;
+        await this.plugin.saveSettings();
+      });
+      this.renderTextField(fields, "Default model", provider.model ?? "", async (value) => {
+        provider.model = value;
+        await this.plugin.saveSettings();
+      });
+      this.renderTextField(fields, "Slash models", provider.models ?? "", async (value) => {
+        provider.models = value;
+        await this.plugin.saveSettings();
+      });
     }
 
     if (provider.authType === "oauth") {
-      new Setting(wrapper)
-        .setName("OAuth connection")
-        .setDesc("Use this for providers that publish OAuth endpoints for desktop apps.")
-        .addText((text) => {
-          text
-            .setPlaceholder("Authorization URL")
-            .setValue(provider.authorizationUrl ?? "")
-            .onChange(async (value) => {
-              provider.authorizationUrl = value;
-              await this.plugin.saveSettings();
-            });
-        })
-        .addText((text) => {
-          text
-            .setPlaceholder("Client ID")
-            .setValue(provider.clientId ?? "")
-            .onChange(async (value) => {
-              provider.clientId = value;
-              await this.plugin.saveSettings();
-            });
-        })
-        .addText((text) => {
-          text
-            .setPlaceholder("Scope")
-            .setValue(provider.scope ?? "")
-            .onChange(async (value) => {
-              provider.scope = value;
-              await this.plugin.saveSettings();
-            });
-        })
-        .addText((text) => {
-          text
-            .setPlaceholder("Access token")
-            .setValue(provider.accessToken ?? "")
-            .onChange(async (value) => {
-              provider.accessToken = value;
-              await this.plugin.saveSettings();
-            });
-          text.inputEl.type = "password";
-        });
+      this.renderTextField(fields, "Authorization URL", provider.authorizationUrl ?? "", async (value) => {
+        provider.authorizationUrl = value;
+        await this.plugin.saveSettings();
+      });
+      this.renderTextField(fields, "Client ID", provider.clientId ?? "", async (value) => {
+        provider.clientId = value;
+        await this.plugin.saveSettings();
+      });
+      this.renderTextField(fields, "Access token", provider.accessToken ?? "", async (value) => {
+        provider.accessToken = value;
+        provider.connectedAt = value ? Date.now() : undefined;
+        await this.plugin.saveSettings();
+        this.display();
+      }, true);
     }
+  }
+
+  private renderTextField(
+    containerEl: HTMLElement,
+    label: string,
+    value: string,
+    onChange: (value: string) => Promise<void>,
+    secret = false,
+  ) {
+    const field = containerEl.createDiv("ai-sidebar-settings-field");
+    field.createDiv({ cls: "ai-sidebar-settings-field__label", text: label });
+    const input = field.createEl("input", {
+      cls: "ai-sidebar-settings-field__input",
+      attr: { type: secret ? "password" : "text" },
+    });
+    input.value = value;
+    input.addEventListener("change", () => {
+      void onChange(input.value);
+    });
   }
 
   private providerDescription(provider: AgentProvider): string {
@@ -1128,8 +1081,12 @@ class AISidebarSettingTab extends PluginSettingTab {
   private configureConnectButton(button: ButtonComponent, provider: AgentProvider) {
     button
       .setButtonText(providerConnectionActionText(provider))
-      .onClick(() => {
-        void startProviderSignIn(provider);
+      .onClick(async () => {
+        if (await startProviderSignIn(provider)) {
+          provider.connectedAt = Date.now();
+          await this.plugin.saveSettings();
+          this.display();
+        }
       });
   }
 }
@@ -1476,7 +1433,7 @@ function buildAgentInstructions(accessMode: AccessMode): string {
   ].join("\n");
 }
 
-async function runProvider(provider: AgentProvider, request: AgentRequest): Promise<string> {
+async function runProvider(provider: AgentProvider, request: AgentRequest, app: App): Promise<string> {
   if (provider.authType === "api-key") {
     return runOpenAICompatibleProvider(provider, request);
   }
@@ -1488,7 +1445,7 @@ async function runProvider(provider: AgentProvider, request: AgentRequest): Prom
     return runOAuthProvider(provider, request);
   }
 
-  return runCliProvider(provider.command, request);
+  return runCliProvider(provider, request, app);
 }
 
 async function runOpenAICompatibleProvider(provider: AgentProvider, request: AgentRequest): Promise<string> {
@@ -1558,11 +1515,13 @@ async function runOAuthProvider(provider: AgentProvider, request: AgentRequest):
   return response.text;
 }
 
-function runCliProvider(command: string, request: AgentRequest): Promise<string> {
+function runCliProvider(provider: AgentProvider, request: AgentRequest, app: App): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, {
-      shell: true,
-      stdio: ["pipe", "pipe", "pipe"],
+    const prompt = cliPromptFromRequest(request);
+    const command = cliCommandForRequest(provider, request, app);
+    const shellCommand = `${command} ${shellQuote(prompt)}`;
+    const child = spawn("/bin/zsh", ["-lc", shellCommand], {
+      stdio: ["ignore", "pipe", "pipe"],
     });
 
     let stdout = "";
@@ -1581,25 +1540,76 @@ function runCliProvider(command: string, request: AgentRequest): Promise<string>
       if (code === 0) {
         resolve(stdout.trim());
       } else {
-        reject(new Error(stderr.trim() || `Command exited with code ${code}`));
+        reject(new Error(stderr.trim() || `Command exited with code ${code}. Check that ${command} is installed and available in your shell.`));
       }
     });
 
-    child.stdin.write(JSON.stringify(request, null, 2));
-    child.stdin.end();
   });
 }
 
-function runShellCommand(command: string): Promise<void> {
+function cliCommandForRequest(provider: AgentProvider, request: AgentRequest, app: App): string {
+  const vaultPath = getVaultPath(app);
+  if (provider.id === "codex" || provider.command.startsWith("codex exec")) {
+    const sandbox = providerSandboxForAccessMode(request.accessMode);
+    const cdArg = vaultPath ? ` -C ${shellQuote(vaultPath)}` : "";
+    return `${provider.command}${cdArg} --skip-git-repo-check -s ${sandbox}`;
+  }
+  return provider.command;
+}
+
+function providerSandboxForAccessMode(accessMode: AccessMode): string {
+  if (accessMode === "full-access") return "workspace-write";
+  return "read-only";
+}
+
+function getVaultPath(app: App): string | undefined {
+  const adapter = app.vault.adapter;
+  if ("basePath" in adapter && typeof adapter.basePath === "string") {
+    return adapter.basePath;
+  }
+  return undefined;
+}
+
+function cliPromptFromRequest(request: AgentRequest): string {
+  return [
+    request.instructions,
+    "",
+    "User request:",
+    request.prompt,
+    "",
+    "Vault context and options:",
+    JSON.stringify({
+      accessMode: request.accessMode,
+      options: request.options,
+      conversation: request.options.memoryEnabled ? request.conversation : [],
+      context: request.context,
+    }, null, 2),
+  ].join("\n");
+}
+
+function openInteractiveTerminal(command: string, title: string): Promise<void> {
+  const escapedCommand = escapeForSingleQuotedShell(command);
+  const script = [
+    `tell application "Terminal"`,
+    "activate",
+    `do script "printf '\\\\033]0;${escapeForAppleScript(title)}\\\\007'; clear; echo 'AI Sidebar sign-in'; echo ''; echo 'Running: ${escapeForAppleScript(command)}'; echo ''; /bin/zsh -lc '${escapedCommand}; echo; echo Sign-in command finished. You can close this window when done.'"`
+    ,
+    "end tell",
+  ].join("\n");
+
   return new Promise((resolve, reject) => {
-    const child = spawn(command, {
-      detached: true,
-      shell: true,
-      stdio: "ignore",
+    const child = spawn("osascript", ["-e", script], {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
     });
     child.on("error", reject);
-    child.unref();
-    resolve();
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(stderr.trim() || `Could not open Terminal. Exit code ${code}`));
+    });
   });
 }
 
@@ -1623,10 +1633,10 @@ function extractOpenAIText(json: unknown): string {
   return parts.join("\n");
 }
 
-async function startOAuthLogin(provider: AgentProvider): Promise<void> {
+async function startOAuthLogin(provider: AgentProvider): Promise<boolean> {
   if (!provider.authorizationUrl || !provider.clientId) {
     new Notice("Add an authorization URL and client ID first.");
-    return;
+    return false;
   }
 
   const url = new URL(provider.authorizationUrl);
@@ -1638,38 +1648,64 @@ async function startOAuthLogin(provider: AgentProvider): Promise<void> {
 
   window.open(url.toString());
   new Notice("OAuth sign-in opened in your browser. Paste the returned token into this provider when available.");
+  return true;
 }
 
-async function startProviderSignIn(provider: AgentProvider): Promise<void> {
+async function startProviderSignIn(provider: AgentProvider): Promise<boolean> {
   if (provider.authType === "cli") {
     if (!provider.signInCommand) {
       new Notice("This local provider does not have a sign-in command configured.");
-      return;
+      return false;
     }
-    await runShellCommand(provider.signInCommand);
-    new Notice(`Started ${provider.name} sign-in. Follow the browser or terminal prompt.`);
-    return;
+    try {
+      await openInteractiveTerminal(provider.signInCommand, `${provider.name} Sign In`);
+      new Notice(`Opened Terminal for ${provider.name} sign-in.`);
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(`Could not open sign-in: ${message}`);
+      return false;
+    }
   }
 
   if (provider.authType === "api-key") {
     if (provider.setupUrl) window.open(provider.setupUrl);
     new Notice(provider.apiKey ? `${provider.name} is connected.` : `Add your ${provider.name} API key below to connect.`);
-    return;
+    return Boolean(provider.apiKey);
   }
 
-  await startOAuthLogin(provider);
+  return startOAuthLogin(provider);
+}
+
+function escapeForSingleQuotedShell(value: string): string {
+  return value.replace(/'/g, "'\\''");
+}
+
+function shellQuote(value: string): string {
+  return `'${escapeForSingleQuotedShell(value)}'`;
+}
+
+function escapeForAppleScript(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
 function providerConnectionActionText(provider: AgentProvider): string {
-  if (provider.authType === "cli") return "Sign in";
+  if (provider.authType === "cli") return isProviderConnected(provider) ? "Reconnect" : "Sign in";
   if (provider.authType === "api-key") return provider.apiKey ? "Connected" : "Get key";
   return provider.accessToken ? "Reconnect" : "Sign in";
 }
 
 function providerConnectionLabel(provider: AgentProvider): string {
-  if (provider.authType === "api-key") return provider.apiKey ? "Connected" : "Needs API key";
-  if (provider.authType === "oauth") return provider.accessToken ? "Connected" : "Needs sign-in";
-  return provider.signInCommand ? "Sign-in available" : "CLI command";
+  if (isProviderConnected(provider)) return "Connected";
+  if (provider.authType === "api-key") return "Needs API key";
+  if (provider.authType === "oauth") return "Needs sign-in";
+  return provider.signInCommand ? "Ready to sign in" : "Needs command";
+}
+
+function isProviderConnected(provider: AgentProvider): boolean {
+  if (provider.authType === "api-key") return Boolean(provider.apiKey);
+  if (provider.authType === "oauth") return Boolean(provider.accessToken);
+  return Boolean(provider.connectedAt);
 }
 
 function isProviderReady(provider: AgentProvider): boolean {
@@ -1681,10 +1717,14 @@ function isProviderReady(provider: AgentProvider): boolean {
 function normalizeProviders(providers: AgentProvider[]): AgentProvider[] {
   return providers.map((provider) => {
     const migrated = provider as AgentProvider;
+    const command = migrated.id === "codex" && migrated.command === "codex"
+      ? "codex exec"
+      : migrated.command ?? "";
     return {
       ...migrated,
       authType: migrated.authType ?? (migrated.command ? "cli" : "api-key"),
-      command: migrated.command ?? "",
+      command,
+      connectedAt: migrated.connectedAt,
     };
   });
 }
