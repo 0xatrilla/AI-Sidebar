@@ -2,9 +2,11 @@ import {
   App,
   ButtonComponent,
   DropdownComponent,
+  type Hotkey,
   ItemView,
   MarkdownView,
   Modal,
+  type Modifier,
   Notice,
   Plugin,
   PluginSettingTab,
@@ -50,6 +52,7 @@ interface AISidebarSettings {
   providers: AgentProvider[];
   defaultProviderId: string;
   defaultAccessMode: AccessMode;
+  sidebarHotkey: string;
   includeFolders: string;
   excludeFolders: string;
   maxContextChars: number;
@@ -284,6 +287,7 @@ const DEFAULT_SETTINGS: AISidebarSettings = {
   ],
   defaultProviderId: "codex",
   defaultAccessMode: "confirm",
+  sidebarHotkey: "",
   includeFolders: "",
   excludeFolders: ".obsidian, node_modules, .git",
   maxContextChars: 45000,
@@ -307,10 +311,13 @@ export default class AISidebarPlugin extends Plugin {
       void this.toggleSidebar();
     });
 
+    const toggleCommandHotkeys = this.settings.sidebarHotkey
+      ? [parseHotkey(this.settings.sidebarHotkey)]
+      : [];
     this.addCommand({
       id: "toggle-ai-sidebar",
       name: "Toggle AI Sidebar",
-      hotkeys: [{ modifiers: ["Mod", "Shift"], key: "A" }],
+      hotkeys: toggleCommandHotkeys,
       callback: () => {
         void this.toggleSidebar();
       },
@@ -903,6 +910,19 @@ class AISidebarSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
+      .setName("Sidebar hotkey")
+      .setDesc("Optional shortcut for toggling the sidebar. Examples: Mod+Shift+A, Cmd+Option+Space, Ctrl+Alt+A. Reload the plugin after changing.")
+      .addText((text) => {
+        text
+          .setPlaceholder("Mod+Shift+A")
+          .setValue(this.plugin.settings.sidebarHotkey)
+          .onChange(async (value) => {
+            this.plugin.settings.sidebarHotkey = normalizeHotkey(value);
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
       .setName("Include folders")
       .setDesc("Comma-separated folder prefixes to include. Leave blank for the whole vault.")
       .addText((text) => {
@@ -1414,6 +1434,54 @@ function parseProviderModels(provider: AgentProvider): string[] {
   return Array.from(new Set(models)).slice(0, 12);
 }
 
+function parseHotkey(value: string): Hotkey {
+  const normalized = normalizeHotkey(value);
+  const parts = normalized.split("+").filter(Boolean);
+  const key = parts.pop() || "A";
+  return {
+    modifiers: parts as Modifier[],
+    key,
+  };
+}
+
+function normalizeHotkey(value: string): string {
+  const aliases: Record<string, string> = {
+    command: "Mod",
+    cmd: "Mod",
+    meta: "Mod",
+    mod: "Mod",
+    control: "Ctrl",
+    ctrl: "Ctrl",
+    option: "Alt",
+    opt: "Alt",
+    alt: "Alt",
+    shift: "Shift",
+  };
+  const parts = value
+    .split("+")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return "";
+
+  const key = parts.pop() ?? "A";
+  const modifiers = parts
+    .map((part) => aliases[part.toLowerCase()] ?? part)
+    .filter((part, index, all) => isModifier(part) && all.indexOf(part) === index);
+  return [...modifiers, normalizeHotkeyKey(key)].join("+");
+}
+
+function isModifier(value: string): value is Modifier {
+  return value === "Mod" || value === "Ctrl" || value === "Alt" || value === "Shift";
+}
+
+function normalizeHotkeyKey(key: string): string {
+  const lower = key.toLowerCase();
+  if (lower === "space" || key === " ") return "Space";
+  if (lower === "enter" || lower === "return") return "Enter";
+  if (lower === "escape" || lower === "esc") return "Escape";
+  return key.length === 1 ? key.toUpperCase() : key;
+}
+
 async function listAgentSkills(app: App, query = ""): Promise<SkillReference[]> {
   const normalizedQuery = query.toLowerCase();
   const vaultSkills = app.vault
@@ -1456,15 +1524,15 @@ async function listAgentSkillsFromAdapter(app: App): Promise<SkillReference[]> {
 
 async function listGlobalAgentSkills(): Promise<SkillReference[]> {
   const roots = [
-    path.join(homedir(), ".agent", "skills"),
-    path.join(homedir(), ".agents", "skills"),
+    path.join(homedir(), ".agent", "skills", "skills"),
+    path.join(homedir(), ".agents", "skills", "skills"),
   ];
   const files: string[] = [];
   for (const root of roots) {
     files.push(...await listFilesystemFiles(root));
   }
   return files
-    .filter((filePath) => isSkillPath(filePath))
+    .filter((filePath) => isGlobalSkillPath(filePath))
     .map((filePath) => ({
       name: skillNameFromPath(filePath),
       path: filePath,
@@ -1537,13 +1605,21 @@ function isSkillFile(file: TFile): boolean {
 }
 
 function isSkillPath(path: string): boolean {
-  const extension = path.split(".").last()?.toLowerCase() ?? "";
-  if (!["md", "txt", "json", "yaml", "yml", "prompt"].includes(extension)) return false;
+  if (!hasSupportedSkillExtension(path)) return false;
   const normalized = path.replace(/^\/+/, "");
   return normalized.startsWith(".agent/skills/")
     || normalized.startsWith(".agents/skills/")
     || normalized.startsWith("agent/skills/")
     || normalized.startsWith("agents/skills/");
+}
+
+function hasSupportedSkillExtension(path: string): boolean {
+  const extension = path.split(".").last()?.toLowerCase() ?? "";
+  return ["md", "txt", "json", "yaml", "yml", "prompt"].includes(extension);
+}
+
+function isGlobalSkillPath(filePath: string): boolean {
+  return path.basename(filePath).toLowerCase() === "skill.md";
 }
 
 function skillNameFromPath(path: string): string {

@@ -1,6 +1,6 @@
 # AI Sidebar for Obsidian
 
-AI Sidebar adds a Cursor/VS Code-style assistant panel to Obsidian. It opens from the ribbon, the command palette, or the default `Mod+Shift+A` hotkey.
+AI Sidebar adds a Cursor/VS Code-style assistant panel to Obsidian. It opens from the ribbon, the command palette, or an optional hotkey you configure in settings.
 
 The plugin is desktop-only because v1 can talk to local CLI agents such as Codex, Claude Code, and opencode. It also supports OpenAI-compatible API providers and OAuth-capable providers when they publish desktop OAuth endpoints.
 

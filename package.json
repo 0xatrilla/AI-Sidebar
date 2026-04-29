@@ -15,7 +15,7 @@
     "claude",
     "opencode"
   ],
-  "author": "Callum Matthews",
+  "author": "acxtrilla",
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^22.15.3",
