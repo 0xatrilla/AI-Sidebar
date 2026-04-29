@@ -20,6 +20,20 @@ The plugin is desktop-only because v1 can talk to local CLI agents such as Codex
   - Confirm actions: proposed writes are shown before applying.
   - Full access: valid proposed writes are applied directly.
 
+## Privacy and security
+
+AI Sidebar sends the active request and selected vault context to whichever provider you configure. Depending on your provider, that may be a local CLI tool, a local subscription-backed agent, or a remote API endpoint.
+
+The plugin can read notes from your vault to build context. It can also read skill files from `~/.agent/skills/skills` and `~/.agents/skills/skills` so those skills can appear in the slash-command picker.
+
+Vault write actions are controlled by the access mode you choose:
+
+- Read only blocks proposed writes.
+- Confirm actions asks before applying proposed writes.
+- Full access applies valid proposed writes directly.
+
+The plugin does not include ads or telemetry.
+
 ## Development
 
 ```bash
