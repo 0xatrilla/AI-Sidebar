@@ -732,22 +732,28 @@ class AISidebarView extends ItemView {
     }
 
     this.slashEl.removeClass("is-hidden");
-    for (const command of commands.slice(0, 6)) {
-      const item = this.slashEl.createDiv("ai-sidebar__slash-item");
-      item.createDiv({ cls: "ai-sidebar__slash-name", text: command.label });
-      item.createDiv({ cls: "ai-sidebar__slash-path", text: command.description });
-      item.addEventListener("mousedown", (event) => {
-        event.preventDefault();
-        this.insertSlashToken(command.insert);
-      });
+    if (skills.length > 0) {
+      this.slashEl.createDiv({ cls: "ai-sidebar__slash-section", text: "Skills" });
     }
-    for (const skill of skills.slice(0, 10)) {
+    for (const skill of skills.slice(0, 12)) {
       const item = this.slashEl.createDiv("ai-sidebar__slash-item");
       item.createDiv({ cls: "ai-sidebar__slash-name", text: `/${skill.name}` });
       item.createDiv({ cls: "ai-sidebar__slash-path", text: skill.path });
       item.addEventListener("mousedown", (event) => {
         event.preventDefault();
         this.insertSlashToken(`/${skill.name}`);
+      });
+    }
+    if (commands.length > 0) {
+      this.slashEl.createDiv({ cls: "ai-sidebar__slash-section", text: "Controls" });
+    }
+    for (const command of commands.slice(0, 8)) {
+      const item = this.slashEl.createDiv("ai-sidebar__slash-item");
+      item.createDiv({ cls: "ai-sidebar__slash-name", text: command.label });
+      item.createDiv({ cls: "ai-sidebar__slash-path", text: command.description });
+      item.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+        this.insertSlashToken(command.insert);
       });
     }
   }
