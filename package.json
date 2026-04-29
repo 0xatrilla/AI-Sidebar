@@ -1,7 +1,7 @@
 {
   "name": "obsidian-ai-sidebar",
   "version": "0.1.0",
-  "description": "A Cursor-style AI sidebar for Obsidian with local CLI agents and vault-aware context.",
+  "description": "A Cursor-style AI sidebar with local CLI agents and vault-aware context.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
