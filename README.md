@@ -1,6 +1,6 @@
 # AI Sidebar for Obsidian
 
-AI Sidebar adds a Cursor/VS Code-style assistant panel to Obsidian. It opens from the ribbon, the command palette, or an optional hotkey you configure in settings.
+AI Sidebar adds a Cursor/VS Code-style assistant panel to Obsidian. It opens from the ribbon or command palette. You can assign a shortcut from Obsidian's hotkeys settings.
 
 The plugin is desktop-only because v1 can talk to local CLI agents such as Codex, Claude Code, and opencode. It also supports OpenAI-compatible API providers and OAuth-capable providers when they publish desktop OAuth endpoints.
 
@@ -47,7 +47,7 @@ Copy or symlink this folder into a test vault at:
 <vault>/.obsidian/plugins/ai-sidebar
 ```
 
-Then enable the plugin in Obsidian community plugin settings.
+If your vault uses a custom configuration folder, replace `.obsidian` with that folder name. Then enable the plugin in Obsidian community plugin settings.
 
 ## Provider setup
 
@@ -99,7 +99,7 @@ You can turn memory off, change how many messages are remembered, or clear memor
 
 ## Local CLI protocol
 
-Local CLI commands receive a JSON request on stdin:
+Local CLI commands receive a prompt argument that includes the user request, instructions, and JSON vault context:
 
 ```json
 {

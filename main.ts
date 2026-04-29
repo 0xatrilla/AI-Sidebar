@@ -2,11 +2,9 @@ import {
   App,
   ButtonComponent,
   DropdownComponent,
-  type Hotkey,
   ItemView,
   MarkdownView,
   Modal,
-  type Modifier,
   Notice,
   Plugin,
   PluginSettingTab,
@@ -52,7 +50,6 @@ interface AISidebarSettings {
   providers: AgentProvider[];
   defaultProviderId: string;
   defaultAccessMode: AccessMode;
-  sidebarHotkey: string;
   includeFolders: string;
   excludeFolders: string;
   maxContextChars: number;
@@ -287,9 +284,8 @@ const DEFAULT_SETTINGS: AISidebarSettings = {
   ],
   defaultProviderId: "codex",
   defaultAccessMode: "confirm",
-  sidebarHotkey: "",
   includeFolders: "",
-  excludeFolders: ".obsidian, node_modules, .git",
+  excludeFolders: "node_modules, .git",
   maxContextChars: 45000,
   enableConversationMemory: true,
   maxMemoryMessages: 30,
@@ -307,27 +303,19 @@ export default class AISidebarPlugin extends Plugin {
       (leaf) => new AISidebarView(leaf, this),
     );
 
-    this.addRibbonIcon("sparkles", "Toggle AI Sidebar", () => {
+    this.addRibbonIcon("sparkles", "Toggle AI sidebar", () => {
       void this.toggleSidebar();
     });
 
-    const toggleCommandHotkeys = this.settings.sidebarHotkey
-      ? [parseHotkey(this.settings.sidebarHotkey)]
-      : [];
     this.addCommand({
-      id: "toggle-ai-sidebar",
-      name: "Toggle AI Sidebar",
-      hotkeys: toggleCommandHotkeys,
+      id: "toggle-sidebar",
+      name: "Toggle sidebar",
       callback: () => {
         void this.toggleSidebar();
       },
     });
 
     this.addSettingTab(new AISidebarSettingTab(this.app, this));
-  }
-
-  onunload() {
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_AI_SIDEBAR);
   }
 
   async toggleSidebar() {
@@ -344,12 +332,12 @@ export default class AISidebarPlugin extends Plugin {
     }
 
     await leaf.setViewState({ type: VIEW_TYPE_AI_SIDEBAR, active: true });
-    this.app.workspace.revealLeaf(leaf);
+    await this.app.workspace.revealLeaf(leaf);
   }
 
   async loadSettings() {
-    const loaded = await this.loadData();
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
+    const loaded = await this.loadData() as Partial<AISidebarSettings> | null;
+    this.settings = { ...DEFAULT_SETTINGS, ...(loaded ?? {}) };
     this.settings.providers = normalizeProviders(this.settings.providers);
     this.settings.rememberedMessages = Array.isArray(this.settings.rememberedMessages)
       ? this.settings.rememberedMessages
@@ -423,7 +411,7 @@ class AISidebarView extends ItemView {
   }
 
   getDisplayText(): string {
-    return "AI Sidebar";
+    return "AI sidebar";
   }
 
   getIcon(): string {
@@ -452,8 +440,9 @@ class AISidebarView extends ItemView {
     await this.refreshContextPreview();
   }
 
-  async onClose() {
+  onClose(): Promise<void> {
     this.contentEl.empty();
+    return Promise.resolve();
   }
 
   private render() {
@@ -461,7 +450,7 @@ class AISidebarView extends ItemView {
     this.contentEl.addClass("ai-sidebar");
 
     const header = this.contentEl.createDiv("ai-sidebar__header");
-    header.createDiv({ cls: "ai-sidebar__title", text: "AI Sidebar" });
+    header.createDiv({ cls: "ai-sidebar__title", text: "AI sidebar" });
     header.createDiv({ cls: "ai-sidebar__subtitle", text: "Vault-aware agents" });
 
     const controls = this.contentEl.createDiv("ai-sidebar__controls");
@@ -626,12 +615,12 @@ class AISidebarView extends ItemView {
 
     const provider = this.plugin.getProvider(this.providerId);
     if (!provider) {
-      new Notice("Choose a provider in AI Sidebar settings.");
+      new Notice("Choose a provider in AI sidebar settings.");
       return;
     }
 
     if (!isProviderReady(provider)) {
-      new Notice("Connect or configure this provider in AI Sidebar settings first.");
+      new Notice("Connect or configure this provider in AI sidebar settings first.");
       return;
     }
 
@@ -692,7 +681,7 @@ class AISidebarView extends ItemView {
     this.messages = [];
     await this.plugin.clearMemory();
     this.renderMessages();
-    new Notice("AI Sidebar memory cleared.");
+    new Notice("AI sidebar memory cleared.");
   }
 
   private async handleActions(response: string): Promise<string> {
@@ -808,7 +797,7 @@ class AISidebarView extends ItemView {
     };
     let accessMode: AccessMode | undefined;
 
-    const cleanPrompt = prompt.replace(/(?:^|\s)\/(model|reasoning|access|memory):([A-Za-z0-9_.-]+)/gi, (match, key, value) => {
+    const cleanPrompt = prompt.replace(/(?:^|\s)\/(model|reasoning|access|memory):([A-Za-z0-9_.-]+)/gi, (match: string, key: string, value: string) => {
       const normalizedKey = String(key).toLowerCase();
       const normalizedValue = String(value).toLowerCase();
       if (normalizedKey === "model") {
@@ -880,7 +869,6 @@ class AISidebarSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "AI Sidebar" });
 
     new Setting(containerEl)
       .setName("Default provider")
@@ -910,24 +898,15 @@ class AISidebarSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName("Sidebar hotkey")
-      .setDesc("Optional shortcut for toggling the sidebar. Examples: Mod+Shift+A, Cmd+Option+Space, Ctrl+Alt+A. Reload the plugin after changing.")
-      .addText((text) => {
-        text
-          .setPlaceholder("Mod+Shift+A")
-          .setValue(this.plugin.settings.sidebarHotkey)
-          .onChange(async (value) => {
-            this.plugin.settings.sidebarHotkey = normalizeHotkey(value);
-            await this.plugin.saveSettings();
-          });
-      });
+      .setName("Sidebar shortcut")
+      .setDesc("Set a shortcut from Obsidian's hotkeys settings by searching for toggle sidebar.");
 
     new Setting(containerEl)
       .setName("Include folders")
       .setDesc("Comma-separated folder prefixes to include. Leave blank for the whole vault.")
       .addText((text) => {
         text
-          .setPlaceholder("Projects, Daily Notes")
+          .setPlaceholder("Projects, daily notes")
           .setValue(this.plugin.settings.includeFolders)
           .onChange(async (value) => {
             this.plugin.settings.includeFolders = value;
@@ -991,21 +970,25 @@ class AISidebarSettingTab extends PluginSettingTab {
       .addButton((button) => {
         button.setButtonText("Clear memory").onClick(async () => {
           await this.plugin.clearMemory();
-          new Notice("AI Sidebar memory cleared.");
+          new Notice("AI sidebar memory cleared.");
         });
       });
 
-    containerEl.createEl("h3", { text: "Connect a Provider" });
+    new Setting(containerEl)
+      .setName("Connect a provider")
+      .setHeading();
     this.renderProviderPresets(containerEl);
 
-    containerEl.createEl("h3", { text: "Connected Providers" });
+    new Setting(containerEl)
+      .setName("Connected providers")
+      .setHeading();
     for (const provider of this.plugin.settings.providers) {
       this.renderProviderSetting(containerEl, provider);
     }
 
     new Setting(containerEl)
       .setName("Advanced provider")
-      .setDesc("Create a custom API, OAuth, or local CLI provider.")
+      .setDesc("Create a custom API, OAUTH, or local CLI provider.")
       .addButton((button) => {
         button.setButtonText("Add custom").onClick(async () => {
           const id = `provider-${Date.now()}`;
@@ -1204,7 +1187,9 @@ class ConfirmActionsModal extends Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl("h2", { text: "Apply AI vault actions?" });
+    new Setting(contentEl)
+      .setName("Apply AI vault actions?")
+      .setHeading();
     contentEl.createEl("p", { text: "Review these proposed file changes before they are applied." });
 
     for (const action of this.actions) {
@@ -1275,7 +1260,7 @@ async function collectVaultContext(
 
   const baseFiles = app.vault
     .getFiles()
-    .filter((file) => file.extension === "base" && shouldIncludeFile(file, settings))
+    .filter((file) => file.extension === "base" && shouldIncludeFile(app, file, settings))
     .slice(0, 5);
   for (const file of baseFiles) {
     const item = await readContextFile(app, file, "base file", budget);
@@ -1350,7 +1335,7 @@ async function findRelevantFiles(
   const scored: Array<{ file: TFile; score: number }> = [];
   const files = app.vault
     .getFiles()
-    .filter((file) => file !== activeFile && shouldIncludeFile(file, settings) && isReadableContextFile(file));
+    .filter((file) => file !== activeFile && shouldIncludeFile(app, file, settings) && isReadableContextFile(file));
 
   for (const file of files) {
     const content = (await app.vault.cachedRead(file)).toLowerCase();
@@ -1370,9 +1355,9 @@ async function findRelevantFiles(
     .map((item) => item.file);
 }
 
-function shouldIncludeFile(file: TFile, settings: AISidebarSettings): boolean {
+function shouldIncludeFile(app: App, file: TFile, settings: AISidebarSettings): boolean {
   const includes = parseFolderList(settings.includeFolders);
-  const excludes = parseFolderList(settings.excludeFolders);
+  const excludes = [app.vault.configDir, ...parseFolderList(settings.excludeFolders)];
   if (includes.length > 0 && !includes.some((folder) => file.path.startsWith(folder))) return false;
   if (excludes.some((folder) => file.path.startsWith(folder))) return false;
   return isReadableContextFile(file);
@@ -1432,54 +1417,6 @@ function parseProviderModels(provider: AgentProvider): string[] {
     .filter(Boolean) ?? [];
   const models = configured.length > 0 ? configured : [provider.model].filter((model): model is string => Boolean(model));
   return Array.from(new Set(models)).slice(0, 12);
-}
-
-function parseHotkey(value: string): Hotkey {
-  const normalized = normalizeHotkey(value);
-  const parts = normalized.split("+").filter(Boolean);
-  const key = parts.pop() || "A";
-  return {
-    modifiers: parts as Modifier[],
-    key,
-  };
-}
-
-function normalizeHotkey(value: string): string {
-  const aliases: Record<string, string> = {
-    command: "Mod",
-    cmd: "Mod",
-    meta: "Mod",
-    mod: "Mod",
-    control: "Ctrl",
-    ctrl: "Ctrl",
-    option: "Alt",
-    opt: "Alt",
-    alt: "Alt",
-    shift: "Shift",
-  };
-  const parts = value
-    .split("+")
-    .map((part) => part.trim())
-    .filter(Boolean);
-  if (parts.length === 0) return "";
-
-  const key = parts.pop() ?? "A";
-  const modifiers = parts
-    .map((part) => aliases[part.toLowerCase()] ?? part)
-    .filter((part, index, all) => isModifier(part) && all.indexOf(part) === index);
-  return [...modifiers, normalizeHotkeyKey(key)].join("+");
-}
-
-function isModifier(value: string): value is Modifier {
-  return value === "Mod" || value === "Ctrl" || value === "Alt" || value === "Shift";
-}
-
-function normalizeHotkeyKey(key: string): string {
-  const lower = key.toLowerCase();
-  if (lower === "space" || key === " ") return "Space";
-  if (lower === "enter" || lower === "return") return "Enter";
-  if (lower === "escape" || lower === "esc") return "Escape";
-  return key.length === 1 ? key.toUpperCase() : key;
 }
 
 async function listAgentSkills(app: App, query = ""): Promise<SkillReference[]> {
@@ -1750,8 +1687,9 @@ async function runOAuthProvider(provider: AgentProvider, request: AgentRequest):
     throw new Error(response.text || `HTTP ${response.status}`);
   }
 
-  if (typeof response.json?.text === "string") return response.json.text;
-  if (typeof response.json?.output_text === "string") return response.json.output_text;
+  const responseJson = response.json as { text?: unknown; output_text?: unknown } | undefined;
+  if (typeof responseJson?.text === "string") return responseJson.text;
+  if (typeof responseJson?.output_text === "string") return responseJson.output_text;
   return response.text;
 }
 
@@ -1873,7 +1811,7 @@ function extractOpenAIText(json: unknown): string {
   return parts.join("\n");
 }
 
-async function startOAuthLogin(provider: AgentProvider): Promise<boolean> {
+function startOAuthLogin(provider: AgentProvider): boolean {
   if (!provider.authorizationUrl || !provider.clientId) {
     new Notice("Add an authorization URL and client ID first.");
     return false;
@@ -1887,7 +1825,7 @@ async function startOAuthLogin(provider: AgentProvider): Promise<boolean> {
   url.searchParams.set("state", crypto.randomUUID());
 
   window.open(url.toString());
-  new Notice("OAuth sign-in opened in your browser. Paste the returned token into this provider when available.");
+  new Notice("OAUTH sign-in opened in your browser. Paste the returned token into this provider when available.");
   return true;
 }
 
@@ -1956,15 +1894,14 @@ function isProviderReady(provider: AgentProvider): boolean {
 
 function normalizeProviders(providers: AgentProvider[]): AgentProvider[] {
   return providers.map((provider) => {
-    const migrated = provider as AgentProvider;
-    const command = migrated.id === "codex" && migrated.command === "codex"
+    const command = provider.id === "codex" && provider.command === "codex"
       ? "codex exec"
-      : migrated.command ?? "";
+      : provider.command ?? "";
     return {
-      ...migrated,
-      authType: migrated.authType ?? (migrated.command ? "cli" : "api-key"),
+      ...provider,
+      authType: provider.authType ?? (provider.command ? "cli" : "api-key"),
       command,
-      connectedAt: migrated.connectedAt,
+      connectedAt: provider.connectedAt,
     };
   });
 }
@@ -2039,7 +1976,7 @@ async function applyVaultAction(app: App, action: VaultAction): Promise<void> {
     const current = await app.vault.read(file);
     await app.vault.modify(file, `${current}${current.endsWith("\n") ? "" : "\n"}${action.content}`);
   } else if (action.type === "delete") {
-    await app.vault.delete(file);
+    await app.fileManager.trashFile(file);
   } else if (action.type === "rename") {
     await ensureParentFolder(app, action.newPath);
     await app.fileManager.renameFile(file, normalizeVaultPath(action.newPath));
@@ -2069,10 +2006,6 @@ function uniqueFiles(files: TFile[]): TFile[] {
     seen.add(file.path);
     return true;
   });
-}
-
-function sanitizeProviderId(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "provider";
 }
 
 function isReasoningEffort(value: string): value is ReasoningEffort {
