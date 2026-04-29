@@ -1,0 +1,10 @@
+{
+  "id": "ai-sidebar",
+  "name": "AI Sidebar",
+  "version": "0.1.0",
+  "minAppVersion": "1.7.2",
+  "description": "A Cursor-style AI sidebar that connects local CLI agents to relevant Obsidian vault context.",
+  "author": "Callum Matthews",
+  "authorUrl": "https://acxtrilla.xyz",
+  "isDesktopOnly": true
+}
