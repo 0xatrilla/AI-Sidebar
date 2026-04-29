@@ -14,6 +14,9 @@ import {
   WorkspaceLeaf,
 } from "obsidian";
 import { spawn } from "child_process";
+import { promises as fs } from "fs";
+import { homedir } from "os";
+import * as path from "path";
 
 const VIEW_TYPE_AI_SIDEBAR = "ai-sidebar-view";
 
@@ -65,6 +68,12 @@ interface AgentSkill {
   name: string;
   path: string;
   content: string;
+}
+
+interface SkillReference {
+  name: string;
+  path: string;
+  source: "vault" | "global";
 }
 
 interface VaultContext {
@@ -386,6 +395,7 @@ class AISidebarView extends ItemView {
   private textareaEl: HTMLTextAreaElement;
   private contextEl: HTMLElement;
   private slashEl: HTMLElement;
+  private modelBadgeEl: HTMLElement;
   private activeContextPath = "";
   private refreshTimer: number | undefined;
   private sendButton: ButtonComponent;
@@ -453,6 +463,7 @@ class AISidebarView extends ItemView {
       .setValue(this.providerId)
       .onChange((value) => {
         this.providerId = value;
+        this.updateModelBadge();
       });
 
     new DropdownComponent(controls)
@@ -494,6 +505,7 @@ class AISidebarView extends ItemView {
     });
     this.textareaEl.addEventListener("input", () => {
       void this.updateSlashCommands();
+      this.updateModelBadge();
     });
 
     this.slashEl = composer.createDiv("ai-sidebar__slash is-hidden");
@@ -509,6 +521,9 @@ class AISidebarView extends ItemView {
       .onClick(() => {
         void this.clearConversation();
       });
+
+    this.modelBadgeEl = actions.createDiv("ai-sidebar__model-badge");
+    this.updateModelBadge();
 
     this.sendButton = new ButtonComponent(actions)
       .setCta()
@@ -539,6 +554,17 @@ class AISidebarView extends ItemView {
       const messageEl = this.threadEl.createDiv(`ai-sidebar__message ai-sidebar__message--${message.role}`);
       messageEl.createDiv({ cls: "ai-sidebar__message-role", text: message.role });
       messageEl.createEl("pre", { text: message.content });
+    }
+
+    if (this.isRunning) {
+      const thinkingEl = this.threadEl.createDiv("ai-sidebar__message ai-sidebar__message--thinking");
+      thinkingEl.createDiv({ cls: "ai-sidebar__message-role", text: "assistant" });
+      const row = thinkingEl.createDiv("ai-sidebar__typing");
+      row.createSpan({ text: "Thinking" });
+      const dots = row.createSpan("ai-sidebar__typing-dots");
+      dots.createSpan();
+      dots.createSpan();
+      dots.createSpan();
     }
 
     this.threadEl.scrollTo({ top: this.threadEl.scrollHeight });
@@ -602,10 +628,19 @@ class AISidebarView extends ItemView {
       return;
     }
 
+    const parsed = this.parsePromptControls(rawPrompt, provider);
+    if (this.isSlashOnlyPrompt(rawPrompt, parsed)) {
+      await this.applySlashControls(provider, parsed);
+      this.textareaEl.value = "";
+      this.updateModelBadge();
+      await this.refreshContextPreview();
+      return;
+    }
+
     this.isRunning = true;
     this.sendButton.setButtonText("Running...");
+    this.sendButton.setDisabled(true);
     this.textareaEl.value = "";
-    const parsed = this.parsePromptControls(rawPrompt, provider);
     const effectiveAccessMode = parsed.accessMode ?? this.accessMode;
     this.messages.push({ role: "user", content: rawPrompt });
     this.renderMessages();
@@ -640,6 +675,8 @@ class AISidebarView extends ItemView {
     } finally {
       this.isRunning = false;
       this.sendButton.setButtonText("Send");
+      this.sendButton.setDisabled(false);
+      this.updateModelBadge();
       this.renderMessages();
     }
   }
@@ -695,7 +732,7 @@ class AISidebarView extends ItemView {
     }
 
     this.slashEl.removeClass("is-hidden");
-    for (const command of commands.slice(0, 10)) {
+    for (const command of commands.slice(0, 6)) {
       const item = this.slashEl.createDiv("ai-sidebar__slash-item");
       item.createDiv({ cls: "ai-sidebar__slash-name", text: command.label });
       item.createDiv({ cls: "ai-sidebar__slash-path", text: command.description });
@@ -704,7 +741,7 @@ class AISidebarView extends ItemView {
         this.insertSlashToken(command.insert);
       });
     }
-    for (const skill of skills.slice(0, 8)) {
+    for (const skill of skills.slice(0, 10)) {
       const item = this.slashEl.createDiv("ai-sidebar__slash-item");
       item.createDiv({ cls: "ai-sidebar__slash-name", text: `/${skill.name}` });
       item.createDiv({ cls: "ai-sidebar__slash-path", text: skill.path });
@@ -723,7 +760,7 @@ class AISidebarView extends ItemView {
   private currentSlashQuery(): string | null {
     const cursor = this.textareaEl.selectionStart;
     const beforeCursor = this.textareaEl.value.slice(0, cursor);
-    const match = beforeCursor.match(/(?:^|\s)\/([A-Za-z0-9_.-]*)$/);
+    const match = beforeCursor.match(/(?:^|\s)\/([A-Za-z0-9_.:-]*)$/);
     return match ? match[1].toLowerCase() : null;
   }
 
@@ -732,7 +769,7 @@ class AISidebarView extends ItemView {
     const value = this.textareaEl.value;
     const beforeCursor = value.slice(0, cursor);
     const afterCursor = value.slice(cursor);
-    const replaced = beforeCursor.replace(/(?:^|\s)\/([A-Za-z0-9_.-]*)$/, (match) => {
+    const replaced = beforeCursor.replace(/(?:^|\s)\/([A-Za-z0-9_.:-]*)$/, (match) => {
       const prefix = match.startsWith(" ") ? " " : "";
       return `${prefix}${token} `;
     });
@@ -774,11 +811,48 @@ class AISidebarView extends ItemView {
     }).trim();
 
     return {
-      cleanPrompt: cleanPrompt || prompt,
+      cleanPrompt,
       selectedSkillNames: this.extractSelectedSkillNames(prompt),
       options,
       accessMode,
     };
+  }
+
+  private isSlashOnlyPrompt(prompt: string, parsed: ParsedPrompt): boolean {
+    return parsed.cleanPrompt.length === 0 && this.extractSelectedSkillNames(prompt).length === 0;
+  }
+
+  private async applySlashControls(provider: AgentProvider, parsed: ParsedPrompt) {
+    const changes: string[] = [];
+    if (parsed.options.model && parsed.options.model !== provider.model) {
+      provider.model = parsed.options.model;
+      changes.push(`model ${parsed.options.model}`);
+    }
+    if (parsed.options.reasoningEffort && parsed.options.reasoningEffort !== provider.reasoningEffort) {
+      provider.reasoningEffort = parsed.options.reasoningEffort;
+      changes.push(`reasoning ${parsed.options.reasoningEffort}`);
+    }
+    if (parsed.accessMode && parsed.accessMode !== this.accessMode) {
+      this.accessMode = parsed.accessMode;
+      this.plugin.settings.defaultAccessMode = parsed.accessMode;
+      changes.push(`access ${this.accessModeLabel()}`);
+    }
+    if (parsed.options.memoryEnabled !== this.plugin.settings.enableConversationMemory) {
+      this.plugin.settings.enableConversationMemory = parsed.options.memoryEnabled;
+      changes.push(`memory ${parsed.options.memoryEnabled ? "on" : "off"}`);
+    }
+    await this.plugin.saveSettings();
+    new Notice(changes.length > 0 ? `Updated ${changes.join(", ")}.` : "Slash command applied.");
+  }
+
+  private updateModelBadge() {
+    if (!this.modelBadgeEl) return;
+    const provider = this.plugin.getProvider(this.providerId);
+    const override = this.textareaEl?.value.match(/(?:^|\s)\/model:([A-Za-z0-9_.:/-]+)/i)?.[1];
+    const model = override || provider?.model || parseProviderModels(provider ?? DEFAULT_SETTINGS.providers[0]).first() || "default";
+    this.modelBadgeEl.setText(model);
+    this.modelBadgeEl.toggleClass("is-override", Boolean(override));
+    this.modelBadgeEl.setAttr("aria-label", override ? `Model override: ${model}` : `Model: ${model}`);
   }
 }
 
@@ -1334,25 +1408,88 @@ function parseProviderModels(provider: AgentProvider): string[] {
   return Array.from(new Set(models)).slice(0, 12);
 }
 
-async function listAgentSkills(app: App, query = ""): Promise<Array<{ name: string; path: string }>> {
+async function listAgentSkills(app: App, query = ""): Promise<SkillReference[]> {
   const normalizedQuery = query.toLowerCase();
-  const skills = app.vault
+  const vaultSkills = app.vault
     .getFiles()
     .filter((file) => isSkillFile(file))
     .map((file) => ({
       name: skillNameFromPath(file.path),
       path: file.path,
-    }))
+      source: "vault" as const,
+    }));
+  const adapterSkills = await listAgentSkillsFromAdapter(app);
+  const globalSkills = await listGlobalAgentSkills();
+  const skills = [...vaultSkills, ...adapterSkills, ...globalSkills]
     .filter((skill) => !normalizedQuery || skill.name.toLowerCase().includes(normalizedQuery))
     .sort((a, b) => a.name.localeCompare(b.name));
 
   const seen = new Set<string>();
   return skills.filter((skill) => {
-    const key = skill.name.toLowerCase();
+    const key = `${skill.source}:${skill.name.toLowerCase()}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
+}
+
+async function listAgentSkillsFromAdapter(app: App): Promise<SkillReference[]> {
+  const roots = [".agent/skills", ".agents/skills", "agent/skills", "agents/skills"];
+  const files: string[] = [];
+  for (const root of roots) {
+    files.push(...await listAdapterFiles(app, root));
+  }
+  return files
+    .filter((path) => isSkillPath(path))
+    .map((path) => ({
+      name: skillNameFromPath(path),
+      path,
+      source: "vault" as const,
+    }));
+}
+
+async function listGlobalAgentSkills(): Promise<SkillReference[]> {
+  const roots = [
+    path.join(homedir(), ".agent", "skills"),
+    path.join(homedir(), ".agents", "skills"),
+  ];
+  const files: string[] = [];
+  for (const root of roots) {
+    files.push(...await listFilesystemFiles(root));
+  }
+  return files
+    .filter((filePath) => isSkillPath(filePath))
+    .map((filePath) => ({
+      name: skillNameFromPath(filePath),
+      path: filePath,
+      source: "global" as const,
+    }));
+}
+
+async function listFilesystemFiles(folder: string): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(folder, { withFileTypes: true });
+    const results = await Promise.all(entries.map(async (entry) => {
+      const childPath = path.join(folder, entry.name);
+      if (entry.isDirectory()) return listFilesystemFiles(childPath);
+      if (entry.isFile()) return [childPath];
+      return [];
+    }));
+    return results.flat();
+  } catch {
+    return [];
+  }
+}
+
+async function listAdapterFiles(app: App, folder: string): Promise<string[]> {
+  try {
+    const listed = await app.vault.adapter.list(folder);
+    const childFiles = listed.files;
+    const nested = await Promise.all(listed.folders.map((child) => listAdapterFiles(app, child)));
+    return [...childFiles, ...nested.flat()];
+  } catch {
+    return [];
+  }
 }
 
 async function readSelectedSkills(
@@ -1364,22 +1501,43 @@ async function readSelectedSkills(
   if (names.size === 0) return [];
 
   const skills: AgentSkill[] = [];
-  for (const file of app.vault.getFiles().filter((candidate) => isSkillFile(candidate))) {
-    const name = skillNameFromPath(file.path);
+  const skillFiles = [...await listAgentSkillsFromAdapter(app), ...await listGlobalAgentSkills()];
+  const vaultFiles = app.vault
+    .getFiles()
+    .filter((candidate) => isSkillFile(candidate))
+    .map((file) => ({ name: skillNameFromPath(file.path), path: file.path, source: "vault" as const }));
+  for (const skillFile of [...vaultFiles, ...skillFiles]) {
+    const name = skillFile.name;
     if (!names.has(name.toLowerCase()) || !budget.hasRoom()) continue;
-    const content = await app.vault.cachedRead(file);
+    const content = await readSkillContent(app, skillFile);
     skills.push({
       name,
-      path: file.path,
+      path: skillFile.path,
       content: budget.take(content),
     });
   }
   return skills;
 }
 
+async function readSkillContent(app: App, skill: SkillReference): Promise<string> {
+  if (skill.source === "global") return fs.readFile(skill.path, "utf8");
+  const file = app.vault.getAbstractFileByPath(skill.path);
+  if (file instanceof TFile) return app.vault.cachedRead(file);
+  return app.vault.adapter.read(skill.path);
+}
+
 function isSkillFile(file: TFile): boolean {
-  if (!["md", "txt", "json", "yaml", "yml"].includes(file.extension)) return false;
-  return file.path.startsWith(".agent/skills/") || file.path.startsWith(".agents/skills/");
+  return isSkillPath(file.path);
+}
+
+function isSkillPath(path: string): boolean {
+  const extension = path.split(".").last()?.toLowerCase() ?? "";
+  if (!["md", "txt", "json", "yaml", "yml", "prompt"].includes(extension)) return false;
+  const normalized = path.replace(/^\/+/, "");
+  return normalized.startsWith(".agent/skills/")
+    || normalized.startsWith(".agents/skills/")
+    || normalized.startsWith("agent/skills/")
+    || normalized.startsWith("agents/skills/");
 }
 
 function skillNameFromPath(path: string): string {
